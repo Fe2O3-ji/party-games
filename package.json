@@ -1,0 +1,9 @@
+{
+  "name": "chuanshengtong",
+  "version": "1.0.0",
+  "private": true,
+  "description": "传声筒 / 默契挑战 · 派对小游戏",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
