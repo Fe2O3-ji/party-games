@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 同一个网页里有两款派对小游戏:
 
 - **传声筒**(3–8 人):描述接龙,看一句话能跑多歪。
-- **默契挑战**(2–4 人):同一主题同时写词,直到全员同词。
+- **默契挑战**(2–5 人):同一主题同时写词,直到全员同词。
 
 服务端只用 Node.js 内置模块,前端是原生 HTML/CSS/JS,零依赖、无构建步骤。规则见 `README.md`。`game.mode` 区分本局玩哪款(`chain` / `match`):空房间由第一位入座的人在选游戏界面决定,入座后房主可以继续在大厅切换。
 
@@ -28,7 +28,7 @@ TURN_SECONDS=5 DISCONNECT_GRACE_MS=2000 node server.js
 MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 ```
 
-默认值:传声筒每棒 45 秒;默契挑战每轮 40 秒,揭晓页停留 8 秒;断线宽限 5 分钟。服务器跑在本机时,合盖/系统睡眠会暂停整个服务;长时间开桌可以用 `caffeinate -dimsu node server.js`。
+默认值:传声筒每棒 60 秒;默契挑战每轮 40 秒,揭晓页停留 8 秒;断线宽限 5 分钟。服务器跑在本机时,合盖/系统睡眠会暂停整个服务;长时间开桌可以用 `caffeinate -dimsu node server.js`。
 
 仓库没有自动化测试、lint 或构建配置。改动后需要启动服务,用多个浏览器窗口验证完整流程。注意同一浏览器的多个标签共享 localStorage 身份,模拟多人要用普通窗口 + 无痕窗口 + 另一浏览器。
 
@@ -47,19 +47,20 @@ MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 默契挑战:lobby → match(input ⇄ reveal) → matchresult → lobby
 ```
 
-- `game.mode` 是 `chain` / `match`:空房间时由第一位入座的人在 `POST /api/join` 里带上 `mode` 决定;房间已有人时新玩家只能加入当前游戏(模式不一致返回 409);入座后房主可通过 `POST /api/mode` 在大厅切换。已有超过 4 人时不能切到默契挑战。
+- `game.mode` 是 `chain` / `match`:空房间时由第一位入座的人在 `POST /api/join` 里带上 `mode` 决定;房间已有人时新玩家只能加入当前游戏(模式不一致返回 409);入座后房主可通过 `POST /api/mode` 在大厅切换。已有超过 5 人时不能切到默契挑战。
 - 默契挑战用 `game.phase = 'match'` 加 `game.match.stage`(`input` / `reveal`)区分输入与揭晓;结算 phase 是 `matchresult`。
 - `molevote` 只在开启卧底模式时出现。
 - `game.order` 是本局随机棒次(存 playerId);`game.step` 指向当前玩家。
 - `game.options`(卧底 / 限制卡 / 类别 / 历史记录)只能在 lobby 由房主修改。
 - 第一个加入的人成为 `hostId`;只有房主能 start、改玩法、清空牌桌。
-- 每棒限时 45 秒(`TURN_SECONDS` 可覆盖),由服务端计时并自动推进。
+- 每棒限时 60 秒(`TURN_SECONDS` 可覆盖),由服务端计时并自动推进。
 
 ### 默契挑战
 
 - `game.match` 保存本局:`theme`、`round`、`stage`(`input` / `reveal`)、`submissions`(pid → 本轮词)、`sources`(pid → `submit` / `carry` / `missed`)、`history[]`、`result`。
 - `game.options.theme`(默认 `true`)决定开局是否指定主题;关闭时 `game.match.theme = ''`,前端显示「自由起手」,结果页也标记自由起手。
-- 人数 2–4(join / start 都校验);开局要求至少 2 人在线。
+- 主题题库在 `data/themes.json`;`loadMatchThemes()` 在每次开局时读取,修改后下一局生效,无需重启。文件缺失或解析失败时回退到 `DEFAULT_MATCH_THEMES`。
+- 人数 2–5(join / start 都校验);开局要求至少 2 人在线。
 - 每轮默认 40 秒(`MATCH_SECONDS`),所有在线玩家交卷立即揭晓;揭晓停留 8 秒(`MATCH_REVEAL_SECONDS`)后自动进入下一轮。
 - 超时收卷:在线但没交的人沿用自己上一轮的词(`carry`);上一轮也没有词则记 `missed`。离线且没交的人本轮弃权(`offline`),不参与判同。
 - 判同:所有非离线参与者都有非空词,且 `normalize()` 后完全相等;至少 2 名参与者。
@@ -74,7 +75,7 @@ MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 - 默契挑战使用独立的 `matchTimer` / `matchSeq` 和 `scheduleMatchTimer()`,输入与揭晓共用一个计时器;`clearMatchTimer()` 在结束、重开、清场时调用。
 - 中间玩家的猜测在锁定步骤就通过 `POST /api/guess` 存入 `game.pendingGuess`;超时自动提交时会保留这个猜测。
 - 在线状态由 SSE 连接实时统计(`isOnline()`),视图里的 `players[].online` 来自它。
-- 断开后 `DISCONNECT_GRACE_MS`(默认 5 分钟)内重连会取消移除。`scheduleRemoval()` 带睡眠保护:如果定时器实际延迟超过宽限期 1 分钟以上(电脑睡过),会重新计时而不是立刻踢人。超时后:大厅直接移出玩家并把房主顺延给下一位;传声筒游戏中保留席位,靠 45 秒超时继续推进;默契挑战掉线者本轮弃权,回到大厅时再清理。
+- 断开后 `DISCONNECT_GRACE_MS`(默认 5 分钟)内重连会取消移除。`scheduleRemoval()` 带睡眠保护:如果定时器实际延迟超过宽限期 1 分钟以上(电脑睡过),会重新计时而不是立刻踢人。超时后:大厅直接移出玩家并把房主顺延给下一位;传声筒游戏中保留席位,靠 60 秒超时继续推进;默契挑战掉线者本轮弃权,回到大厅时再清理。
 - 房主可在大厅通过 `POST /api/kick-offline` 手动移出离线玩家(不会移除房主自己);前端只在有离线玩家时显示「移出离线玩家 (n)」。
 - 断线时前端显示 `.conn-banner`「连接中断,正在重连…」;名字存 localStorage `tt_name`,起名页自动回填。
 - 投票自动结算只统计在线玩家,掉线的人不会阻塞开奖。
@@ -83,7 +84,7 @@ MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 ### 描述判定
 
 - `rules.js` 是零依赖纯函数模块:`containsTarget()` 判断描述是否包含完整目标词(忽略空格、标点、大小写);`RESTRICTIONS` 每条都带可执行的 `check`。
-- 提交描述时服务端按顺序校验:目标词 → 本棒限制。违规返回 400,不推进 `step`,45 秒计时继续。
+- 提交描述时服务端按顺序校验:目标词 → 本棒限制。违规返回 400,不推进 `step`,60 秒计时继续。
 - 第一棒的目标词是 `word`;中间玩家的目标词是 `guess`(可能来自 `pendingGuess`);最后一棒没有描述,不校验。
 - 超时自动提交的占位描述绕过校验,避免自动推进被拒绝。
 - 限制卡只存规则 id,视图用 `restrictionText()` 转成文案。新增规则必须在 `rules.js` 提供 `id`、`text`、`check`,否则无法判定。
@@ -143,7 +144,7 @@ MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 4. 结算路径:`settlePig()` / `settleMole()` / `finishMatch()`,以及 `again` / `reset` 的状态清理(注意 `again` 保留模式、`reset` 重置模式)。
 5. 匿名与身份泄露检查:投票人、卧底、原词、历史描述、默契挑战当前轮未揭晓的词。
 6. 新增限制卡规则时同步改 `rules.js` 的 `check`,并补充正反例测试。
-7. 人数限制同时写在 join 和 start 两处:传声筒 3–8,默契挑战 2–4;大厅切换模式时还要检查当前人数。
+7. 人数限制同时写在 join 和 start 两处:传声筒 3–8,默契挑战 2–5;大厅切换模式时还要检查当前人数。
 8. 新增游戏模式时同步处理:一级选游戏页的锁定、`POST /api/join` 的 `mode`、大厅切换,以及 `again` / `reset` 后的模式。
 9. 新增按模式的选项时,`apiOptions` 用部分合并,前端按模式渲染对应开关,`renderKey` 的 `optionsKey` 要包含新字段。
 

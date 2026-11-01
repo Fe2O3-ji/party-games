@@ -27,7 +27,7 @@ const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
 
 // 每棒限时(秒);断线后保留多久再移出牌桌(毫秒)
-const TURN_SECONDS = Number(process.env.TURN_SECONDS) || 45;
+const TURN_SECONDS = Number(process.env.TURN_SECONDS) || 60;
 const TURN_MS = TURN_SECONDS * 1000;
 
 // 默认给 5 分钟:合盖、锁屏、切网会短暂断开 SSE,不应该立刻把人踢出房间。
@@ -59,13 +59,30 @@ const CATEGORIES = [
   '影视作品', '网络流行语', '运动', '地点', '情绪',
 ];
 
-// 默契挑战的起始主题:第一轮大家凭第一反应写词
-const MATCH_THEMES = [
+// 默契挑战的起始主题:第一轮大家凭第一反应写词。
+// 实际题库在 data/themes.json,每局开局时重新读取,改文件后下一局生效,不用重启服务。
+const DEFAULT_MATCH_THEMES = [
   '夏天', '旅行', '红色', '雨天', '深夜', '学校', '厨房', '海边',
   '童年', '周末', '城市', '运动会', '便利店', '火锅', '音乐', '猫',
   '下班路上', '冬天', '第一次见面', '游乐园', '电影', '迟到',
   '早餐', '搬家', '散步', '节日',
 ];
+const THEMES_FILE = path.resolve(__dirname, 'data', 'themes.json');
+
+function loadMatchThemes() {
+  try {
+    const list = JSON.parse(fs.readFileSync(THEMES_FILE, 'utf8'));
+    if (Array.isArray(list)) {
+      const themes = [...new Set(list.map((t) => String(t).trim()).filter(Boolean))];
+      if (themes.length) return themes;
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.warn('[themes] 读取 data/themes.json 失败,使用内置题库:', err.message);
+    }
+  }
+  return DEFAULT_MATCH_THEMES;
+}
 
 const game = {
   phase: 'lobby',   // lobby | playing | vote | molevote | result | match | matchresult
@@ -253,9 +270,11 @@ function matchRating(rounds) {
 
 function startMatch() {
   // 房主可以关掉「指定主题」,关掉后第一轮完全自由起手
-  const theme = game.options.theme
-    ? MATCH_THEMES[Math.floor(Math.random() * MATCH_THEMES.length)]
-    : '';
+  let theme = '';
+  if (game.options.theme) {
+    const themes = loadMatchThemes();
+    theme = themes[Math.floor(Math.random() * themes.length)];
+  }
 
   game.match = {
     theme,
@@ -738,11 +757,11 @@ function apiJoin(res, data) {
     });
   }
 
-  const cap = game.mode === 'match' ? 4 : 8;
+  const cap = game.mode === 'match' ? 5 : 8;
   if (game.players.length >= cap) {
     return json(res, 409, {
       ok: false,
-      error: game.mode === 'match' ? '默契挑战最多 4 人,人满了' : '人满了(最多 8 人)',
+      error: game.mode === 'match' ? '默契挑战最多 5 人,人满了' : '人满了(最多 8 人)',
     });
   }
   if (game.players.some((p) => p.name === name)) {
@@ -771,8 +790,8 @@ function apiStart(res, data) {
     if (game.players.length < 2) {
       return json(res, 400, { ok: false, error: '至少 2 人才能开局' });
     }
-    if (game.players.length > 4) {
-      return json(res, 400, { ok: false, error: '默契挑战最多 4 人' });
+    if (game.players.length > 5) {
+      return json(res, 400, { ok: false, error: '默契挑战最多 5 人' });
     }
     if (onlinePlayers().length < 2) {
       return json(res, 400, { ok: false, error: '至少 2 人在线才能开局' });
@@ -866,10 +885,10 @@ function apiMode(res, data) {
   }
 
   const mode = data.mode === 'match' ? 'match' : 'chain';
-  if (mode === 'match' && game.players.length > 4) {
+  if (mode === 'match' && game.players.length > 5) {
     return json(res, 409, {
       ok: false,
-      error: `默契挑战最多 4 人,现在有 ${game.players.length} 人,请先让多余的人离开`,
+      error: `默契挑战最多 5 人,现在有 ${game.players.length} 人,请先让多余的人离开`,
     });
   }
 

@@ -348,7 +348,7 @@ function gameChoiceView(s) {
   const occupied = s.players.length > 0;
   const roomMode = s.mode;
   const roomName = roomMode === 'match' ? '默契挑战' : '传声筒';
-  const roomCap = roomMode === 'match' ? 4 : 8;
+  const roomCap = roomMode === 'match' ? 5 : 8;
   const roomFull = occupied && s.players.length >= roomCap;
 
   const card = (mode, no, title, meta, desc) => {
@@ -384,7 +384,7 @@ function gameChoiceView(s) {
       </header>
       <p class="pick-lead">今晚想玩哪一款?</p>
       <section class="game-pick">
-        ${card('match', '01', '默契挑战', '2–4 人 · 同时猜词', '同一主题同时写词,直到全员想到一块。')}
+        ${card('match', '01', '默契挑战', '2–5 人 · 同时猜词', '同一主题同时写词,直到全员想到一块。')}
         ${card('chain', '02', '传声筒', '3–8 人 · 描述接龙', '一个人描述、下一个人猜,看话能跑多歪。')}
       </section>
       <p class="pick-note">${note}</p>
@@ -406,7 +406,7 @@ function joinView(s) {
        下一个人猜,再描述他猜的词……<br>
        看看最后的答案能跑多远。`;
 
-  const idleHint = isMatch ? '2–4 人,人齐就开桌。' : '3–8 人,第一局就等你开桌。';
+  const idleHint = isMatch ? '2–5 人,人齐就开桌。' : '3–8 人,第一局就等你开桌。';
 
   return shell(s, `
     <section class="panel anim">
@@ -469,7 +469,7 @@ function modeView(s) {
     </div>
     <div class="mode-grid">
       ${card('chain', '传声筒', '3–8 人 · 描述接龙')}
-      ${card('match', '默契挑战', '2–4 人 · 同时猜词')}
+      ${card('match', '默契挑战', '2–5 人 · 同时猜词')}
     </div>`;
 }
 
@@ -480,7 +480,7 @@ function matchOptionsView(s) {
     <div class="options">
       <div class="options-head">
         <span class="tag">玩法</span>
-        <span class="hint">2–4 人 · ${s.isHost ? '由你设置' : '由房主设置'}</span>
+        <span class="hint">2–5 人 · ${s.isHost ? '由你设置' : '由房主设置'}</span>
       </div>
       <label class="opt ${s.isHost ? '' : 'locked'}">
         <input type="checkbox" id="optTheme" ${s.options.theme ? 'checked' : ''} ${locked}>
@@ -494,7 +494,7 @@ function matchOptionsView(s) {
 function lobbyView(s) {
   const n = s.players.length;
   const isMatch = s.mode === 'match';
-  const cap = isMatch ? 4 : 8;
+  const cap = isMatch ? 5 : 8;
   const min = isMatch ? 2 : 3;
   const offlineCount = s.players.filter((p) => p.online === false).length;
 
