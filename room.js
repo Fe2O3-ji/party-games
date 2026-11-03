@@ -87,6 +87,24 @@ function json(res, status, obj) {
  */
 function createRoom(code, options = {}) {
   const onDelete = options.onDelete || (() => {});
+  const onGameStart = options.onGameStart || (() => {});
+  const onGameEnd = options.onGameEnd || (() => {});
+
+  function notifyGameStart() {
+    try {
+      onGameStart(game.mode);
+    } catch (err) {
+      console.warn('[stats] 记录开局失败:', err.message);
+    }
+  }
+
+  function notifyGameEnd(mode) {
+    try {
+      onGameEnd(mode);
+    } catch (err) {
+      console.warn('[stats] 记录结束失败:', err.message);
+    }
+  }
 
   const game = {
     phase: 'lobby',   // lobby | playing | vote | molevote | result | match | matchresult
@@ -402,6 +420,7 @@ function createRoom(code, options = {}) {
     m.stage = 'result';
     game.phase = 'matchresult';
     broadcast();
+    notifyGameEnd('match');
   }
 
   // -------------------------------------------------------------------------
@@ -738,6 +757,7 @@ function createRoom(code, options = {}) {
       clearTurnTimer();
       startMatch();
       broadcast();
+      notifyGameStart();
       return json(res, 200, { ok: true });
     }
 
@@ -784,6 +804,7 @@ function createRoom(code, options = {}) {
     startTurnTimer();
 
     broadcast();
+    notifyGameStart();
     json(res, 200, { ok: true });
   }
 
@@ -1010,6 +1031,7 @@ function createRoom(code, options = {}) {
       game.moleVotes = {};
     } else {
       game.phase = 'result';
+      notifyGameEnd('chain');
     }
   }
 
@@ -1024,6 +1046,7 @@ function createRoom(code, options = {}) {
       correct: t.top.some((p) => p.id === game.moleId),
     };
     game.phase = 'result';
+    notifyGameEnd('chain');
   }
 
   function apiVote(res, data) {

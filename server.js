@@ -15,6 +15,7 @@ const path = require('path');
 const os = require('os');
 
 const { createRoom, json, clean } = require('./room');
+const stats = require('./stats');
 
 const PORT = Number(process.env.PORT) || 3000;
 const PUBLIC_DIR = path.resolve(__dirname, 'public');
@@ -91,9 +92,14 @@ function apiCreateRoom(res, data) {
   }
 
   let room;
-  room = createRoom(code, { onDelete: () => deleteRoom(room) });
+  room = createRoom(code, {
+    onDelete: () => deleteRoom(room),
+    onGameStart: (mode) => stats.gameStarted(code, mode),
+    onGameEnd: (mode) => stats.gameEnded(code, mode),
+  });
   rooms.set(code, room);
   const pid = room.addPlayer(name);
+  stats.roomCreated(code, name);
 
   json(res, 200, { ok: true, pid, room: code, mode: room.game.mode });
 }
@@ -115,6 +121,7 @@ function apiJoinRoom(res, data) {
 
   // 游戏已经开始:允许旁观,但不占用玩家席位。
   if (game.phase !== 'lobby') {
+    stats.spectatorJoined(code, name);
     return json(res, 200, { ok: true, spectator: true, room: code, mode: game.mode });
   }
 
@@ -134,6 +141,7 @@ function apiJoinRoom(res, data) {
   }
 
   const pid = room.addPlayer(name);
+  stats.playerJoined(code, name);
   json(res, 200, { ok: true, pid, room: code, mode: game.mode });
 }
 
@@ -234,6 +242,191 @@ function serveStatic(res, pathname) {
 }
 
 // ---------------------------------------------------------------------------
+// 本机统计页
+// ---------------------------------------------------------------------------
+
+function escHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;',
+  }[ch]));
+}
+
+function fmtTime(iso) {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return escHtml(iso);
+  return escHtml(d.toLocaleString('zh-CN', { hour12: false }));
+}
+
+function serveStats(req, res) {
+  const addr = req.socket.remoteAddress || '';
+  const local = addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+  if (!local) {
+    res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('统计页只允许在本机通过 http://localhost:3000/stats 访问。');
+  }
+
+  const s = stats.snapshot();
+  const players = Object.entries(s.players)
+    .map(([name, v]) => ({
+      name,
+      joins: v.joins || 0,
+      spectators: v.spectators || 0,
+      firstSeen: v.firstSeen,
+      lastSeen: v.lastSeen,
+    }))
+    .filter((p) => p.joins > 0 || p.spectators > 0)
+    .sort((a, b) => (b.joins - a.joins)
+      || (b.spectators - a.spectators)
+      || String(b.lastSeen || '').localeCompare(String(a.lastSeen || '')));
+
+  const uniquePlayers = players.filter((p) => p.joins > 0).length;
+  const uniqueSpectators = players.filter((p) => p.spectators > 0).length;
+
+  const phaseLabels = {
+    lobby: '大厅',
+    playing: '传声筒中',
+    vote: '最猪投票',
+    molevote: '猜卧底',
+    result: '结算',
+    match: '默契挑战中',
+    matchresult: '默契结算',
+  };
+
+  const live = [...rooms.values()].map((r) => {
+    const onlinePids = new Set([...r.clients.values()].map((c) => c.pid).filter(Boolean));
+    return {
+      code: r.code,
+      mode: r.game.mode === 'match' ? '默契挑战' : '传声筒',
+      phase: phaseLabels[r.game.phase] || r.game.phase,
+      players: r.game.players.length,
+      online: r.game.players.filter((p) => onlinePids.has(p.id)).length,
+      spectators: [...r.clients.values()].filter((c) => !c.pid).length,
+    };
+  });
+
+  const playerRows = players.length
+    ? players.map((p) => `
+        <tr>
+          <td>${escHtml(p.name)}</td>
+          <td class="num">${p.joins}</td>
+          <td class="num">${p.spectators}</td>
+          <td>${fmtTime(p.firstSeen)}</td>
+          <td>${fmtTime(p.lastSeen)}</td>
+        </tr>`).join('')
+    : '<tr><td colspan="5" class="stats-empty">还没有记录</td></tr>';
+
+  const liveRows = live.length
+    ? live.map((r) => `
+        <tr>
+          <td class="mono">${escHtml(r.code)}</td>
+          <td>${escHtml(r.mode)}</td>
+          <td>${escHtml(r.phase)}</td>
+          <td class="num">${r.online} / ${r.players}</td>
+          <td class="num">${r.spectators}</td>
+        </tr>`).join('')
+    : '<tr><td colspan="5" class="stats-empty">当前没有活跃房间</td></tr>';
+
+  const eventLabels = {
+    create: '创建房间',
+    join: '加入玩家',
+    spectate: '旁观',
+    start: '开局',
+    end: '结束',
+  };
+  const eventRows = s.events.length
+    ? s.events.slice(0, 60).map((e) => `
+        <tr>
+          <td>${fmtTime(e.at)}</td>
+          <td>${escHtml(eventLabels[e.type] || e.type)}</td>
+          <td class="mono">${escHtml(e.room || '—')}</td>
+          <td>${escHtml(e.name || '—')}</td>
+          <td>${escHtml(e.mode === 'match' ? '默契挑战' : e.mode === 'chain' ? '传声筒' : '')}</td>
+        </tr>`).join('')
+    : '<tr><td colspan="5" class="stats-empty">还没有事件</td></tr>';
+
+  const started = s.gamesStarted || {};
+  const finished = s.gamesFinished || {};
+
+  const html = `<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>小游戏桌 · 统计</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <div class="wrap">
+    <header class="masthead">
+      <div class="seal">统计</div>
+      <div class="eyebrow">本机查看</div>
+      <h1>玩过的人</h1>
+      <div class="rule"></div>
+    </header>
+
+    <section class="panel anim">
+      <div class="stats-grid">
+        <div class="stats-card"><span>累计创建房间</span><b>${s.roomsCreated || 0}</b></div>
+        <div class="stats-card"><span>玩家人次</span><b>${s.playerJoins || 0}</b></div>
+        <div class="stats-card"><span>唯一玩家名</span><b>${uniquePlayers}</b></div>
+        <div class="stats-card"><span>旁观人次</span><b>${s.spectatorJoins || 0}</b><small>${uniqueSpectators} 个名字</small></div>
+        <div class="stats-card"><span>传声筒开局</span><b>${started.chain || 0}</b><small>完成 ${finished.chain || 0}</small></div>
+        <div class="stats-card"><span>默契挑战开局</span><b>${started.match || 0}</b><small>完成 ${finished.match || 0}</small></div>
+        <div class="stats-card"><span>当前活跃房间</span><b>${live.length}</b></div>
+      </div>
+      <p class="hint">最后一次更新:${fmtTime(s.updatedAt)}</p>
+    </section>
+
+    <section class="panel anim">
+      <div class="turn-label">玩家名单</div>
+      <div class="stats-scroll">
+        <table class="stats-table">
+          <thead><tr><th>名字</th><th>玩家加入</th><th>旁观</th><th>首次出现</th><th>最近出现</th></tr></thead>
+          <tbody>${playerRows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel anim">
+      <div class="turn-label">当前房间</div>
+      <div class="stats-scroll">
+        <table class="stats-table">
+          <thead><tr><th>房间码</th><th>游戏</th><th>阶段</th><th>在线 / 玩家</th><th>旁观连接</th></tr></thead>
+          <tbody>${liveRows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel anim">
+      <div class="turn-label">最近事件</div>
+      <div class="stats-scroll">
+        <table class="stats-table">
+          <thead><tr><th>时间</th><th>事件</th><th>房间</th><th>名字</th><th>游戏</th></tr></thead>
+          <tbody>${eventRows}</tbody>
+        </table>
+      </div>
+    </section>
+
+    <p class="hint">只允许本机访问 · 数据保存在 data/stats.json · 统计从启用后开始记录</p>
+    <a class="stats-link" href="/">← 回到小游戏桌</a>
+    <div class="foot">同一房间 · 一个房主 · 随时开新局</div>
+  </div>
+</body>
+</html>`;
+
+  res.writeHead(200, {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(html);
+}
+
+// ---------------------------------------------------------------------------
 // HTTP 服务器
 // ---------------------------------------------------------------------------
 
@@ -245,6 +438,9 @@ const server = http.createServer(async (req, res) => {
   }
   if (req.method === 'POST') {
     return handleApi(req, res, url);
+  }
+  if (req.method === 'GET' && url.pathname === '/stats') {
+    return serveStats(req, res);
   }
   if (req.method === 'GET') {
     return serveStatic(res, url.pathname);

@@ -1513,6 +1513,93 @@ textarea:focus {
 .traj-word.muted { opacity: 0.62; }
 .traj-word .word-tag { margin-left: 2px; }
 
+/* ---------- 统计页 ---------- */
+
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(138px, 1fr));
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.stats-card {
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.35);
+  border-left: 3px solid var(--green);
+}
+
+.stats-card span {
+  display: block;
+  font-family: var(--mono);
+  font-size: 9px;
+  letter-spacing: 0.12em;
+  color: var(--ink-soft);
+}
+
+.stats-card b {
+  display: block;
+  font-family: var(--serif);
+  font-size: 28px;
+  line-height: 1.25;
+}
+
+.stats-card small {
+  display: block;
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.stats-scroll { overflow-x: auto; }
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.stats-table th {
+  padding: 8px 6px;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 400;
+  letter-spacing: 0.1em;
+  color: var(--ink-soft);
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+.stats-table td {
+  padding: 8px 6px;
+  border-bottom: 1px solid rgba(34, 27, 19, 0.08);
+  vertical-align: top;
+}
+
+.stats-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.stats-empty {
+  padding: 18px 6px;
+  text-align: center;
+  color: var(--ink-soft);
+  opacity: 0.75;
+}
+
+.stats-link {
+  display: inline-block;
+  margin-top: 14px;
+  color: var(--red);
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-decoration: none;
+}
+
+.stats-link:hover { text-decoration: underline; }
+
 /* ---------- 页脚 ---------- */
 
 .foot {

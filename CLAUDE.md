@@ -22,6 +22,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - 游戏已经开始 → 进入**旁观模式**,不占玩家席位;本局结束后可以在大厅点「加入这一桌」转为玩家。
 - 最后一名玩家离开(宽限期结束)或房主清空牌桌后,房间被删除并释放房间码;房间码之后可以复用。
 - 房间码和网页地址都不是密码;拿到的人都能加入/旁观。
+- 本地统计记录带名字的建房/加入/旁观/开局/结束,页面在 `http://localhost:3000/stats`,只允许本机访问。
 
 ## 命令
 
@@ -57,6 +58,14 @@ MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 - 其余 `/api/*` 通过 `data.pid` 找到房间,再调用 `room.handleAction(path, data, res)`;找不到房间返回 403。
 - `GET /events?pid=&room=`:优先用 pid 找房间;没有 pid 时用房间码连接旁观。找不到房间时发送一次 `{ noRoom: true }` 并结束 SSE。
 - `deleteRoom(room)` 从 Map 删除并调用 `room.destroy()`;房间销毁时向所有 SSE 客户端发送 `noRoom`。
+
+### 本地统计(stats.js + /stats)
+
+- `stats.js` 把统计写到 `data/stats.json`(可用 `STATS_FILE` 覆盖,测试用临时文件),原子写入;重启后自动加载。
+- 记录:`roomsCreated`、`playerJoins`、`spectatorJoins`、`gamesStarted` / `gamesFinished`、`players[name]`(joins / spectators / firstSeen / lastSeen)、最近 200 条 `events`。
+- `server.js` 在创建房间/加入玩家/旁观时调用 `stats.roomCreated` / `playerJoined` / `spectatorJoined`;`room.js` 通过 `onGameStart` / `onGameEnd` 回调记录开局/结束。
+- `GET /stats` 在 `server.js` 里直接渲染 HTML,**只允许本机回环地址**(127.0.0.1 / ::1);远程访问返回 403。所有名字必须 `escHtml()`。
+- `data/stats.json` 包含玩家名字,已加入 `.gitignore`,不要提交;删文件即可清零。统计从功能启用后开始记录,无法补录历史。
 
 ### 单房引擎(room.js)
 
@@ -141,5 +150,6 @@ MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 6. 匿名与泄露检查:投票人、卧底、原词、历史描述、默契挑战当前轮未揭晓的词、旁观者可见范围。
 7. 人数限制同时写在房间加入和开局两处:传声筒 3–8,默契挑战 2–5;切换模式时检查当前人数。
 8. 新增限制卡规则时同步改 `rules.js` 的 `check`;新增模式选项时 `apiOptions` 做部分合并,`renderKey` 的 `optionsKey` 加字段。
+9. 新增统计事件时同步改 `stats.js` 的计数/事件结构和 `/stats` 页;不要把 `data/stats.json` 提交到仓库。
 
 样式优先复用 `.panel`、`.paper`、`.btn`、`.vote-opt`、`.count-row` 等现有类,保持纸张主题一致。
