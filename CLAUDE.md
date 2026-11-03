@@ -66,7 +66,7 @@ MATCH_SECONDS=5 MATCH_REVEAL_SECONDS=2 node server.js
 - 判同:所有非离线参与者都有非空词,且 `normalize()` 后完全相等;至少 2 名参与者。
 - 揭晓时在线人数少于 2 → 直接结算(原因 `players`)。房主随时可以 `POST /api/match-end` 结算;当前未揭晓的一轮不计入 `history`。
 - 一局只结算一次(`matchresult`);称号按 `history.length`:1 / 2 / 3–4 / 5+,未相遇统一「各想各的」。
-- 手动提交 1–8 个字,不能重复自己上一轮的词;超时沿用不受此限制。
+- 手动提交 1–8 个字,允许重复自己上一轮的词;超时沿用同一套规则。
 - `game.match` 在 `again` / `reset` 时清空;`again` 保留 `game.mode`,`reset` 回到 `chain`。
 
 ### 回合计时与在线状态

@@ -1028,11 +1028,6 @@ function apiMatchSubmit(res, data) {
     return json(res, 400, { ok: false, error: '请写一个带文字的词' });
   }
 
-  const prevWord = previousMatchWord(data.pid);
-  if (prevWord && normalize(prevWord) === normalize(word)) {
-    return json(res, 400, { ok: false, error: `不能重复自己上一轮的词「${prevWord}」` });
-  }
-
   m.submissions[data.pid] = word;
   m.sources[data.pid] = 'submit';
 
