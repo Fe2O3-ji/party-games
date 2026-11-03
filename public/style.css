@@ -1163,6 +1163,81 @@ textarea:focus {
 
 .link-back:hover { color: var(--red); }
 
+/* ---------- 房间入口 ---------- */
+
+.entry-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.entry-tab {
+  appearance: none;
+  -webkit-appearance: none;
+  padding: 12px 14px;
+  background: rgba(255, 255, 255, 0.32);
+  border: 1.5px solid rgba(34, 27, 19, 0.22);
+  border-radius: 2px;
+  font-family: var(--sans);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.entry-tab:hover { background: rgba(255, 255, 255, 0.52); }
+
+.entry-tab.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: var(--paper-light);
+}
+
+.entry-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 2px;
+}
+
+.entry-head .hint { margin: 0; font-size: 11px; }
+
+.room-code {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  background: rgba(62, 99, 85, 0.09);
+  border-left: 3px solid var(--green);
+}
+
+.room-code b {
+  font-family: var(--mono);
+  font-size: 28px;
+  letter-spacing: 0.16em;
+  line-height: 1.2;
+}
+
+.spectator-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: #2a2118;
+  color: #f0e6d2;
+  border-left: 4px solid var(--red);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+}
+
+.spectator-banner .tag { color: #e08a7d; }
+
 /* ---------- 默契挑战 ---------- */
 
 .theme-card {

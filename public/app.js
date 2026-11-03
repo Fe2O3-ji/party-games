@@ -7,6 +7,8 @@
 const appEl = document.getElementById('app');
 
 let pid = localStorage.getItem('tt_pid') || '';
+let roomCode = localStorage.getItem('tt_room') || '';
+let spectator = localStorage.getItem('tt_spectator') === '1';
 let savedName = localStorage.getItem('tt_name') || '';
 let state = null;
 let stateReceivedAt = 0;
@@ -24,9 +26,8 @@ let selectedMoleVote = null;
 let celebratedRound = null;
 let celebratedMatch = null;
 
-// 未入座玩家的两级入口:先选游戏,再填名字
-let joinScreen = 'game'; // game | name
-let selectedMode = '';
+// 未进入房间时的入口:创建房间 / 加入房间
+let entryTab = 'create'; // create | join
 
 // ---------------------------------------------------------------------------
 // 基础工具
@@ -93,6 +94,53 @@ function setConnectionLost(lost) {
   }
 }
 
+function makeEntryState() {
+  return {
+    phase: 'entry',
+    mode: 'chain',
+    roomCode: '',
+    spectator: false,
+    roundNo: 1,
+    hostId: null,
+    options: { mole: false, restriction: false, category: false, history: false, theme: true },
+    players: [],
+    order: [],
+    step: 0,
+    me: null,
+    isHost: false,
+    turnSeconds: 60,
+    matchSeconds: 40,
+  };
+}
+
+function resetToEntry() {
+  pid = '';
+  roomCode = '';
+  spectator = false;
+  localStorage.removeItem('tt_pid');
+  localStorage.removeItem('tt_room');
+  localStorage.removeItem('tt_spectator');
+
+  if (es) {
+    es.onopen = null;
+    es.onmessage = null;
+    es.onerror = null;
+    es.close();
+    es = null;
+  }
+
+  setConnectionLost(false);
+  selectedVote = null;
+  selectedMoleVote = null;
+  celebratedRound = null;
+  celebratedMatch = null;
+  lastPhase = null;
+  lastTurnIndex = null;
+  lastKey = '';
+  state = makeEntryState();
+  renderNow();
+}
+
 function connect() {
   if (es) {
     // 主动换连接时不要把旧连接的关闭当成断线
@@ -104,7 +152,10 @@ function connect() {
   }
 
   setConnectionLost(false);
-  es = new EventSource('/events?pid=' + encodeURIComponent(pid));
+  const params = new URLSearchParams();
+  if (pid) params.set('pid', pid);
+  if (roomCode) params.set('room', roomCode);
+  es = new EventSource('/events?' + params.toString());
 
   es.onopen = () => setConnectionLost(false);
 
@@ -115,6 +166,10 @@ function connect() {
     try {
       next = JSON.parse(event.data);
     } catch (err) {
+      return;
+    }
+    if (next.noRoom) {
+      resetToEntry();
       return;
     }
     onState(next);
@@ -143,10 +198,23 @@ function onState(next) {
   lastPhase = next.phase;
   lastTurnIndex = turnIndex;
 
-  // 服务器重启过:本地身份已失效
-  if (pid && !next.me && next.phase === 'lobby') {
-    pid = '';
-    localStorage.removeItem('tt_pid');
+  // 房间 / 身份以服务端视图为准
+  if (next.roomCode) {
+    roomCode = next.roomCode;
+    localStorage.setItem('tt_room', roomCode);
+  }
+  if (next.spectator) {
+    spectator = true;
+    if (pid) {
+      pid = '';
+      localStorage.removeItem('tt_pid');
+    }
+    localStorage.setItem('tt_spectator', '1');
+  } else if (next.me) {
+    spectator = false;
+    pid = next.me.id;
+    localStorage.setItem('tt_pid', pid);
+    localStorage.removeItem('tt_spectator');
   }
 
   if (next.perfect && celebratedRound !== next.roundNo) {
@@ -178,7 +246,7 @@ function onState(next) {
 
 function renderKey(s) {
   const meKey = s.me ? s.me.id : 'guest';
-  const playerCount = s.me ? s.players.length : '';
+  const playerCount = s.players.length;
   const resultKey = s.result
     ? s.result.winners.map((w) => w.id).join(',') + '|' + s.result.totalVotes
     : '';
@@ -209,6 +277,9 @@ function renderKey(s) {
   return [
     s.phase,
     s.mode ?? '',
+    s.roomCode ?? '',
+    s.spectator ? 1 : 0,
+    s.phase === 'entry' ? entryTab : '',
     s.roundNo,
     s.step,
     meKey,
@@ -258,7 +329,13 @@ function restoreInputDrafts(draft) {
   for (const item of draft.fields) {
     const el = document.getElementById(item.id);
     if (!el || !('value' in el)) continue;
-    if (!el.value && item.value) {
+
+    // 入口页的名字可能有默认回填值,用户的输入草稿要优先。
+    const restore = item.id === 'entryCode' || item.id === 'entryName'
+      ? item.value !== el.value
+      : (!el.value && item.value);
+
+    if (restore && item.value) {
       el.value = item.value;
       if (el.setSelectionRange && item.start != null) {
         try {
@@ -301,9 +378,10 @@ function renderNow() {
 // ---------------------------------------------------------------------------
 
 function build(s) {
+  if (s.phase === 'entry') return entryView(s);
   if (!s.me) {
-    if (s.phase !== 'lobby') return spectatorView(s);
-    return joinScreen === 'name' ? joinView(s) : gameChoiceView(s);
+    if (s.spectator) return spectatorView(s);
+    return entryView(s);
   }
 
   switch (s.phase) {
@@ -344,94 +422,186 @@ function shell(s, inner, modeOverride) {
     </div>`;
 }
 
-function gameChoiceView(s) {
-  const occupied = s.players.length > 0;
-  const roomMode = s.mode;
-  const roomName = roomMode === 'match' ? '默契挑战' : '传声筒';
-  const roomCap = roomMode === 'match' ? 5 : 8;
-  const roomFull = occupied && s.players.length >= roomCap;
+function roomCodeHtml(s) {
+  if (!s.roomCode) return '';
+  return `
+    <div class="room-code anim">
+      <span class="tag">房间码</span>
+      <b>${esc(s.roomCode)}</b>
+    </div>`;
+}
 
-  const card = (mode, no, title, meta, desc) => {
-    const current = occupied && roomMode === mode;
-    const locked = occupied && roomMode !== mode;
-    const full = current && roomFull;
-    const disabled = locked || full;
-
-    return `
-      <button type="button"
-              class="pick-card ${current ? 'current' : ''} ${disabled ? 'locked' : ''}"
-              data-pick="${mode}" ${disabled ? 'disabled' : ''}>
-        <span class="pick-no">${no}</span>
-        <span class="pick-title">${title}</span>
-        <span class="pick-meta">${meta}</span>
-        <span class="pick-desc">${desc}</span>
-        ${current ? `<span class="pick-badge">${full ? '房间已满' : '房间正在玩'}</span>` : ''}
-        ${locked ? '<span class="pick-badge ghost">本房间选了另一款</span>' : ''}
-      </button>`;
-  };
-
-  const note = occupied
-    ? `房间正在玩「${roomName}」,已有 ${s.players.length} 人在座。${roomFull ? '已满,等下一局吧。' : '选它入座。'}`
-    : '房间还空着,选一个游戏开桌。';
+function entryView(s) {
+  const isCreate = entryTab === 'create';
 
   return `
     <div class="wrap">
       <header class="masthead">
-        <div class="seal">选一个</div>
+        <div class="seal">开一桌</div>
         <div class="eyebrow">派对小游戏</div>
         <h1>小游戏桌</h1>
         <div class="rule"></div>
       </header>
-      <p class="pick-lead">今晚想玩哪一款?</p>
-      <section class="game-pick">
-        ${card('match', '01', '默契挑战', '2–5 人 · 同时猜词', '同一主题同时写词,直到全员想到一块。')}
-        ${card('chain', '02', '传声筒', '3–8 人 · 描述接龙', '一个人描述、下一个人猜,看话能跑多歪。')}
+      <div class="entry-tabs anim">
+        <button type="button" class="entry-tab ${isCreate ? 'active' : ''}" data-entry-tab="create">创建房间</button>
+        <button type="button" class="entry-tab ${isCreate ? '' : 'active'}" data-entry-tab="join">加入房间</button>
+      </div>
+      <section class="panel anim">
+        <div class="entry-head">
+          <span class="tag">${isCreate ? '建一桌' : '进一桌'}</span>
+          <span class="hint">6 位数字房间码</span>
+        </div>
+        <form id="${isCreate ? 'createForm' : 'joinForm'}">
+          <label class="field">
+            <span>房间码(6 位数字)</span>
+            <input id="entryCode" type="text" maxlength="6" inputmode="numeric" pattern="[0-9]{6}" placeholder="例如 123456" autocomplete="off" required>
+          </label>
+          <label class="field">
+            <span>你的名字</span>
+            <input id="entryName" type="text" maxlength="12" value="${esc(savedName)}" placeholder="写个名字" autocomplete="off" required>
+          </label>
+          <button class="btn red" type="submit">${isCreate ? '创建并进入' : '加入房间'}</button>
+        </form>
+        <p class="hint">${isCreate
+          ? '房间码由你定,不能和现有房间重复;进入大厅后再选游戏。'
+          : '输入房主给你的房间码。游戏已经开始时会进入旁观模式。'}</p>
       </section>
-      <p class="pick-note">${note}</p>
+      <p class="pick-note">最多 50 间房 · 创建后把房间码发给朋友</p>
       <div class="foot">同一房间 · 一个房主 · 随时开新局</div>
     </div>`;
 }
 
-function joinView(s) {
-  const n = s.players.length;
-  // 房间已经有人时,游戏由房主决定;空房间用刚选的游戏
-  const mode = n > 0 ? s.mode : (selectedMode || s.mode);
-  const isMatch = mode === 'match';
+function spectatorBanner(s) {
+  return `
+    <div class="spectator-banner anim">
+      <span class="tag">旁观中</span>
+      <span>房间 ${esc(s.roomCode || '')}</span>
+    </div>`;
+}
 
-  const lead = isMatch
-    ? `同一道题,所有人同时写下一个词;<br>
-       看不到别人,交卷后一起揭晓。<br>
-       一轮轮联想,直到想到一块。`
-    : `一个人想一个词,用一句话描述;<br>
-       下一个人猜,再描述他猜的词……<br>
-       看看最后的答案能跑多远。`;
-
-  const idleHint = isMatch ? '2–5 人,人齐就开桌。' : '3–8 人,第一局就等你开桌。';
-
-  return shell(s, `
-    <section class="panel anim">
-      <button type="button" class="link-back" id="backToPick">← 换个游戏</button>
-      <p class="lead">${lead}</p>
-      <form id="joinForm">
-        <label class="field">
-          <span>你的名字</span>
-          <input id="nameInput" type="text" maxlength="12" value="${esc(savedName)}" placeholder="写个名字" autocomplete="off" required>
-        </label>
-        <button class="btn red" type="submit">入座</button>
-      </form>
-      <p class="hint">${n > 0 ? `已有 ${n} 人在座,等你了。` : idleHint}</p>
-    </section>
-  `, mode);
+function spectatorPlayersHtml(s) {
+  return `
+    <div class="match-players">
+      ${s.players.map((p) => `
+        <div class="match-player ${p.online ? '' : 'off'}">
+          <span class="mp-name">${esc(p.name)}</span>
+          <span class="mp-state">${p.online ? '在线' : '离线'}</span>
+        </div>`).join('')}
+    </div>`;
 }
 
 function spectatorView(s) {
+  if (s.phase === 'lobby') return spectatorLobbyView(s);
+  if (s.phase === 'result') return resultView(s);
+  if (s.phase === 'matchresult') return matchResultView(s);
+  if (s.phase === 'vote' || s.phase === 'molevote') return spectatorChainRevealView(s);
+  if (s.phase === 'playing') return spectatorChainPlayingView(s);
+  if (s.phase === 'match') return spectatorMatchView(s);
   return shell(s, `
+    ${spectatorBanner(s)}
     <section class="panel waiting anim">
       <div class="dots"><span></span><span></span><span></span></div>
-      <p class="wait-name">本局进行中</p>
-      <p class="hint">等这一局结束再加入吧。</p>
+      <p class="wait-name">旁观中</p>
+      <p class="hint">等这一局结束吧。</p>
+    </section>`);
+}
+
+function spectatorLobbyView(s) {
+  const n = s.players.length;
+  const cap = s.mode === 'match' ? 5 : 8;
+  const full = n >= cap;
+
+  const seats = s.players.map((p, i) => `
+    <li class="seat anim" style="animation-delay:${i * 35}ms">
+      <span class="no">${String(i + 1).padStart(2, '0')}</span>
+      <span class="name">${esc(p.name)}</span>
+      ${p.online === false ? '<span class="offline">离线</span>' : ''}
+      ${p.id === s.hostId ? '<span class="host">房主</span>' : ''}
+    </li>`).join('');
+
+  return shell(s, `
+    ${spectatorBanner(s)}
+    <section class="panel anim">
+      <div class="lobby-head">
+        <h2>${s.mode === 'match' ? '默契挑战' : '传声筒'} · <em>${n}</em> / ${cap}</h2>
+        <p class="hint">你正在旁观这一桌</p>
+      </div>
+      <ul class="seat-list">${seats}</ul>
+      ${full
+        ? '<button class="btn" disabled>房间满了</button>'
+        : '<button class="btn red" id="spectatorJoinBtn">加入这一桌</button>'}
+      <p class="hint">加入后会成为玩家,从下一局开始参与。</p>
+    </section>`);
+}
+
+function spectatorChainPlayingView(s) {
+  const total = s.order.length;
+  const idx = s.step;
+  const pips = Array.from({ length: total }, (_, i) => {
+    const cls = i < idx ? 'done' : i === idx ? 'now' : '';
+    return `<div class="pip ${cls}"></div>`;
+  }).join('');
+  const offlineNote = s.currentPlayerOnline === false ? ' <span class="offline">离线</span>' : '';
+
+  return shell(s, `
+    ${spectatorBanner(s)}
+    <div class="turnbar">
+      <span>第 ${idx + 1} / ${total} 棒</span>
+      <span class="bar">${pips}</span>
+      <span class="countdown mono" id="countdown"></span>
+    </div>
+    <section class="panel waiting anim">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <p class="wait-name"><b>${esc(s.currentPlayer)}</b> 正在传话${offlineNote}</p>
+      <p class="hint">旁观中,看不到描述内容;本局结束后可以加入下一局。</p>
     </section>
-  `);
+    ${spectatorPlayersHtml(s)}`);
+}
+
+function spectatorChainRevealView(s) {
+  return shell(s, `
+    ${spectatorBanner(s)}
+    <div class="round-banner anim">本回合结束 · 答案揭晓</div>
+    ${perfectBanner(s)}
+    ${chainMeta(s)}
+    ${chainHtml(s)}
+    <section class="panel waiting anim">
+      <p class="hint">旁观中,不能参与投票。等本局结束可以加入下一局。</p>
+    </section>`);
+}
+
+function spectatorMatchInputInner(s) {
+  const m = s.match;
+  const last = m.history.length ? m.history[m.history.length - 1] : null;
+
+  return `
+    ${matchTurnbar(s, `第 ${m.round} 轮 · 旁观`)}
+    ${themeCardHtml(m)}
+    ${last ? lastRoundHtml(last, '上一轮') : ''}
+    <section class="panel waiting anim">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <p class="wait-name">玩家正在写词…</p>
+      <p class="hint">全部交卷后自动揭晓。</p>
+    </section>
+    ${matchPlayersHtml(s)}`;
+}
+
+function spectatorMatchView(s) {
+  const m = s.match;
+  if (!m) {
+    return shell(s, `
+      ${spectatorBanner(s)}
+      <section class="panel waiting anim">
+        <p class="wait-name">旁观中</p>
+        <p class="hint">等这一局结束吧。</p>
+      </section>`);
+  }
+
+  const inner = m.stage === 'reveal' ? matchRevealInner(s) : spectatorMatchInputInner(s);
+  return shell(s, `
+    ${spectatorBanner(s)}
+    ${inner}
+    <p class="hint">旁观中,不能提交;本局结束后可以加入下一局。</p>`);
 }
 
 function optionsView(s) {
@@ -518,6 +688,7 @@ function lobbyView(s) {
 
   return shell(s, `
     <section class="panel anim">
+      ${roomCodeHtml(s)}
       <div class="lobby-head">
         <h2>已就座 <em>${n}</em> / ${cap}</h2>
         <p class="hint">${isMatch ? '2 人即可开局,所有人同时写词。' : '3 人即可开局,系统随机排棒次。'}</p>
@@ -526,7 +697,7 @@ function lobbyView(s) {
       <ul class="seat-list">${seats}</ul>
       ${isMatch ? matchOptionsView(s) : optionsView(s)}
       ${startArea}
-      <p class="hint share">让朋友打开同一个网址加入</p>
+      <p class="hint share">让朋友打开同一网址,输入房间码 ${esc(s.roomCode)} 加入</p>
       ${s.isHost ? `
         ${offlineCount ? `<button class="btn ghost mini" id="kickOfflineBtn">移出离线玩家 (${offlineCount})</button>` : ''}
         <button class="btn ghost mini" id="resetBtn">清空牌桌</button>
@@ -854,6 +1025,7 @@ function resultView(s) {
   }
 
   return shell(s, `
+    ${s.spectator ? spectatorBanner(s) : ''}
     ${perfectBanner(s)}
     <section class="panel pig-card anim">
       <div class="tag">第 ${s.roundNo} 回合</div>
@@ -864,7 +1036,7 @@ function resultView(s) {
       <p class="hint">${winners.length ? '得票最多,荣获本回合「最猪」称号。' : '一票都没有,大家都很靠谱。'}</p>
     </section>
     ${moleBlock}
-    <button class="btn" id="againBtn">再来一局</button>
+    ${s.spectator ? '' : '<button class="btn" id="againBtn">再来一局</button>'}
     <section class="panel anim" style="margin-top:16px">
       <div class="turn-label">得票</div>
       ${counts}
@@ -961,23 +1133,31 @@ function matchPlayersHtml(s) {
     <p class="tally">已提交 <b id="matchSubmittedCount">${m.submittedCount}</b> / <span id="matchOnlineCount">${m.onlineCount}</span> 在线</p>`;
 }
 
+function themeCardHtml(m) {
+  if (!m.theme) {
+    return `
+    <section class="theme-card tape free anim">
+      <span class="tag">自由起手</span>
+      <div class="theme-word">想到什么写什么</div>
+      <p class="hint">本局不指定主题,凭第一直觉写一个词。</p>
+    </section>`;
+  }
+
+  return `
+    <section class="theme-card tape anim">
+      <span class="tag">本局主题</span>
+      <div class="theme-word">${esc(m.theme)}</div>
+      <p class="hint">想到什么就写什么,1–8 个字。交卷前看不到别人。</p>
+    </section>`;
+}
+
 function matchInputInner(s) {
   const m = s.match;
   const last = m.history.length ? m.history[m.history.length - 1] : null;
 
   return `
     ${matchTurnbar(s, `第 ${m.round} 轮 · 每轮 ${m.matchSeconds}s`)}
-    ${m.theme ? `
-    <section class="theme-card tape anim">
-      <span class="tag">本局主题</span>
-      <div class="theme-word">${esc(m.theme)}</div>
-      <p class="hint">想到什么就写什么,1–8 个字。交卷前看不到别人。</p>
-    </section>` : `
-    <section class="theme-card tape free anim">
-      <span class="tag">自由起手</span>
-      <div class="theme-word">想到什么写什么</div>
-      <p class="hint">本局不指定主题,凭第一直觉写一个词。</p>
-    </section>`}
+    ${themeCardHtml(m)}
     ${last ? lastRoundHtml(last, '上一轮') : ''}
     ${m.myWord ? matchWaitingHtml(s) : matchFormHtml(s)}
     ${matchPlayersHtml(s)}`;
@@ -1059,7 +1239,13 @@ function trajectoryHtml(history, finalRound) {
 
 function matchResultView(s) {
   const m = s.match;
-  if (!m) return spectatorView(s);
+  if (!m) {
+    return shell(s, `
+      ${s.spectator ? spectatorBanner(s) : ''}
+      <section class="panel waiting anim">
+        <p class="wait-name">本局已结束</p>
+      </section>`);
+  }
 
   const reasonText = m.matched
     ? `全员在第 ${m.rounds} 轮说出了同一个词`
@@ -1075,6 +1261,7 @@ function matchResultView(s) {
   const themeLabel = m.theme ? `主题「${esc(m.theme)}」` : '自由起手';
 
   return shell(s, `
+    ${s.spectator ? spectatorBanner(s) : ''}
     <section class="panel pig-card anim">
       <div class="tag">默契挑战 · ${themeLabel}</div>
       <div class="pig-name">${esc(m.rating)}</div>
@@ -1084,7 +1271,7 @@ function matchResultView(s) {
       <p class="hint">${reasonText}</p>
     </section>
     ${trajectoryHtml(m.history, finalRound)}
-    <button class="btn" id="againBtn">再来一局</button>
+    ${s.spectator ? '' : '<button class="btn" id="againBtn">再来一局</button>'}
   `);
 }
 
@@ -1092,51 +1279,101 @@ function matchResultView(s) {
 // 事件绑定
 // ---------------------------------------------------------------------------
 
-function bind(s) {
-  const joinForm = document.getElementById('joinForm');
-  if (joinForm) {
-    joinForm.addEventListener('submit', async (event) => {
-      event.preventDefault();
-      const name = document.getElementById('nameInput').value.trim();
-      if (!name) return;
+async function submitEntry(event, url, form) {
+  event.preventDefault();
 
-      const btn = joinForm.querySelector('button');
-      btn.disabled = true;
-
-      // 空房间时带上选好的游戏;房间已经有人时以房主的游戏为准
-      const mode = s.players.length > 0 ? s.mode : (selectedMode || s.mode);
-      const result = await post('/api/join', { name, mode });
-      if (!result) {
-        btn.disabled = false;
-        return;
-      }
-
-      pid = result.pid;
-      savedName = name;
-      localStorage.setItem('tt_pid', pid);
-      localStorage.setItem('tt_name', name);
-      joinScreen = 'game';
-      selectedMode = '';
-      lastKey = '';
-      connect();
-    });
+  const code = document.getElementById('entryCode').value.trim();
+  const name = document.getElementById('entryName').value.trim();
+  if (!/^\d{6}$/.test(code)) {
+    toast('房间码必须是 6 位数字');
+    return;
+  }
+  if (!name) {
+    toast('先起个名字');
+    return;
   }
 
-  document.querySelectorAll('.pick-card[data-pick]').forEach((btn) => {
+  const btn = form.querySelector('button');
+  btn.disabled = true;
+  const result = await post(url, { code, name });
+  if (!result) {
+    btn.disabled = false;
+    return;
+  }
+
+  savedName = name;
+  localStorage.setItem('tt_name', name);
+  roomCode = result.room;
+  localStorage.setItem('tt_room', roomCode);
+
+  if (result.spectator) {
+    pid = '';
+    spectator = true;
+    localStorage.removeItem('tt_pid');
+    localStorage.setItem('tt_spectator', '1');
+  } else {
+    pid = result.pid;
+    spectator = false;
+    localStorage.setItem('tt_pid', pid);
+    localStorage.removeItem('tt_spectator');
+  }
+
+  state = null;
+  lastKey = '';
+  connect();
+}
+
+function bind(s) {
+  document.querySelectorAll('[data-entry-tab]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      if (btn.disabled) return;
-      selectedMode = btn.dataset.pick;
-      joinScreen = 'name';
+      if (btn.dataset.entryTab === entryTab) return;
+      entryTab = btn.dataset.entryTab;
       renderNow();
     });
   });
 
-  const backToPick = document.getElementById('backToPick');
-  if (backToPick) {
-    backToPick.addEventListener('click', () => {
-      joinScreen = 'game';
-      selectedMode = '';
-      renderNow();
+  const createForm = document.getElementById('createForm');
+  if (createForm) {
+    createForm.addEventListener('submit', (event) => submitEntry(event, '/api/room/create', createForm));
+  }
+
+  const joinForm = document.getElementById('joinForm');
+  if (joinForm) {
+    joinForm.addEventListener('submit', (event) => submitEntry(event, '/api/room/join', joinForm));
+  }
+
+  const entryCode = document.getElementById('entryCode');
+  if (entryCode) {
+    entryCode.addEventListener('input', () => {
+      entryCode.value = entryCode.value.replace(/\D/g, '').slice(0, 6);
+    });
+  }
+
+  const spectatorJoinBtn = document.getElementById('spectatorJoinBtn');
+  if (spectatorJoinBtn) {
+    spectatorJoinBtn.addEventListener('click', async () => {
+      if (!savedName) {
+        toast('先起个名字');
+        return;
+      }
+      spectatorJoinBtn.disabled = true;
+      const result = await post('/api/room/join', { code: s.roomCode, name: savedName });
+      if (!result) {
+        spectatorJoinBtn.disabled = false;
+        return;
+      }
+      if (result.spectator) {
+        toast('本局已经开始了,继续旁观');
+        renderNow();
+        return;
+      }
+      pid = result.pid;
+      spectator = false;
+      roomCode = result.room;
+      localStorage.setItem('tt_pid', pid);
+      localStorage.setItem('tt_room', roomCode);
+      localStorage.removeItem('tt_spectator');
+      connect();
     });
   }
 
@@ -1219,12 +1456,7 @@ function bind(s) {
       resetBtn.disabled = true;
       const result = await post('/api/reset', { pid });
       if (result) {
-        pid = '';
-        localStorage.removeItem('tt_pid');
-        joinScreen = 'game';
-        selectedMode = '';
-        lastKey = '';
-        connect();
+        resetToEntry();
       } else {
         resetBtn.disabled = false;
       }
@@ -1414,8 +1646,9 @@ function bind(s) {
 function focusFor(s) {
   let id = null;
 
-  if (!s.me && s.phase === 'lobby') {
-    id = 'nameInput';
+  if (s.phase === 'entry') {
+    const codeEl = document.getElementById('entryCode');
+    id = codeEl && codeEl.value.length === 6 ? 'entryName' : 'entryCode';
   } else if (s.phase === 'playing' && s.turn) {
     if (s.turn.first) id = 'wordInput';
     else if (stage === 'guess') id = 'guessInput';
@@ -1577,4 +1810,9 @@ setInterval(() => {
 
 // ---------------------------------------------------------------------------
 
-connect();
+if (pid || (roomCode && spectator)) {
+  connect();
+} else {
+  state = makeEntryState();
+  renderNow();
+}
